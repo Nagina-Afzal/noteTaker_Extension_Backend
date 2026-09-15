@@ -26,18 +26,19 @@ export async function transcribeFromUrl(audioUrl) {
     throw new Error("audioUrl is required for transcription.");
   }
 
+  const form = new FormData();
+  form.append("model", GROQ_AUDIO_MODEL);
+  form.append("url", audioUrl);
+  form.append("language", "en");
+  form.append("response_format", "text");
+
   const res = await fetch(GROQ_AUDIO_URL, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${getKey()}`,
-      "Content-Type": "application/json",
+      // No Content-Type — fetch sets the correct multipart boundary for FormData.
     },
-    body: JSON.stringify({
-      model: GROQ_AUDIO_MODEL,
-      url: audioUrl,
-      language: "en",
-      response_format: "text",
-    }),
+    body: form,
   });
 
   if (!res.ok) {
@@ -49,6 +50,7 @@ export async function transcribeFromUrl(audioUrl) {
   if (!text) throw new Error("Groq returned an empty transcript.");
   return text;
 }
+
 
 /**
  * Low-level chat helper. Throws on failure so callers can surface real errors.
