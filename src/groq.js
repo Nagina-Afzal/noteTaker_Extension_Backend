@@ -7,6 +7,43 @@ const GROQ_AUDIO_URL = `${GROQ_API_BASE}/audio/transcriptions`;
 const GROQ_CHAT_MODEL = "openai/gpt-oss-120b";
 const GROQ_AUDIO_MODEL = "whisper-large-v3";
 
+// ---------------------------------------------------------------------------
+// Whisper hallucination filtering
+// ---------------------------------------------------------------------------
+// Whisper-family models NEVER output silence — on short clips, dead air, or
+// low-SNR audio it fabricates a plausible-sounding sentence instead ("Hi, my
+// name is Rakeem Augusto...") rather than admitting low confidence. This is a
+// well-documented failure mode, not a bug specific to this integration.
+//
+// The fix is to request response_format:"verbose_json" instead of "text".
+// That returns each segment with three quality signals, and we drop any
+// segment that looks hallucinated instead of trusting it blindly:
+//   - no_speech_prob : probability the segment is actually silence/noise
+//   - avg_logprob    : average token confidence (very negative = unsure)
+//   - compression_ratio : very high = repetitive/garbled text (hallucination
+//                          pattern), very low = also suspicious
+// Thresholds below are the conservative values Groq/OpenAI's own docs and
+// most production Whisper wrappers converge on.
+const NO_SPEECH_PROB_THRESHOLD = 0.6;
+const AVG_LOGPROB_THRESHOLD = -1.0;
+const COMPRESSION_RATIO_THRESHOLD = 2.4;
+
+function isHallucinatedSegment(seg) {
+  if (typeof seg.no_speech_prob === "number" && seg.no_speech_prob > NO_SPEECH_PROB_THRESHOLD) {
+    return true;
+  }
+  if (typeof seg.avg_logprob === "number" && seg.avg_logprob < AVG_LOGPROB_THRESHOLD) {
+    return true;
+  }
+  if (
+    typeof seg.compression_ratio === "number" &&
+    seg.compression_ratio > COMPRESSION_RATIO_THRESHOLD
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function getKey() {
   const key = process.env.GROQ_API_KEY;
   if (!key) throw new Error("GROQ_API_KEY is not configured on the server.");
@@ -17,6 +54,10 @@ function getKey() {
  * Transcribe audio that is already hosted at a public URL (e.g. Cloudinary).
  * Groq accepts a `url` field instead of uploading bytes, so we never proxy the
  * binary through this function.
+ *
+ * Uses response_format:"verbose_json" so we get per-segment confidence data
+ * and can filter out hallucinated segments (see isHallucinatedSegment above)
+ * instead of returning fabricated text as if it were a real transcript.
  *
  * @param {string} audioUrl publicly reachable URL to the audio file
  * @returns {Promise<string>} transcript text
@@ -30,7 +71,8 @@ export async function transcribeFromUrl(audioUrl) {
   form.append("model", GROQ_AUDIO_MODEL);
   form.append("url", audioUrl);
   form.append("language", "en");
-  form.append("response_format", "text");
+  form.append("response_format", "verbose_json");
+  form.append("timestamp_granularities[]", "segment");
 
   const res = await fetch(GROQ_AUDIO_URL, {
     method: "POST",
@@ -46,8 +88,49 @@ export async function transcribeFromUrl(audioUrl) {
     throw new Error(`Groq transcription failed (${res.status}): ${detail}`);
   }
 
-  const text = (await res.text()).trim();
-  if (!text) throw new Error("Groq returned an empty transcript.");
+  let data;
+  try {
+    data = await res.json();
+  } catch {
+    throw new Error("Groq returned a non-JSON transcription response.");
+  }
+
+  // Some very short/edge-case responses may come back without a segments
+  // array. Fall back to the plain text field rather than failing outright —
+  // but this path skips hallucination filtering, so it's the exception, not
+  // the norm.
+  if (!Array.isArray(data.segments) || data.segments.length === 0) {
+    const text = (data.text || "").trim();
+    if (!text) throw new Error("Groq returned an empty transcript.");
+    return text;
+  }
+
+  const keptSegments = data.segments.filter((seg) => !isHallucinatedSegment(seg));
+  const droppedCount = data.segments.length - keptSegments.length;
+
+  if (droppedCount > 0) {
+    console.warn(
+      `[groq] Dropped ${droppedCount}/${data.segments.length} transcript segment(s) as likely Whisper hallucinations (silence/low-confidence audio).`
+    );
+  }
+
+  const text = keptSegments
+    .map((seg) => seg.text.trim())
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+
+  if (!text) {
+    // Every segment looked like a hallucination — almost always means the
+    // recording was silent, far too short, or the mic/tab audio never
+    // actually reached the mixed stream. Surface a clear, honest error
+    // instead of ever returning fabricated text.
+    throw new Error(
+      "No clear speech was detected in this recording (it may be silent, too short, or too quiet). " +
+        "Check that the audio actually contains speech before retrying."
+    );
+  }
+
   return text;
 }
 
@@ -84,7 +167,7 @@ async function chat(messages, maxTokens = 1024, temperature = 0.3) {
 // ---------------------------------------------------------------------------
 // Summarization — STRICT separation of overview / key points / action items.
 // Key points must be statements, topics and decisions. Raw questions that were
-// asked during the meeting must NOT appear as key points; they may only appear
+// asked during the meeting must NOT appear as key points. they may only appear
 // under the optional "Open questions" section when genuinely unresolved.
 // ---------------------------------------------------------------------------
 const SUMMARY_SYSTEM_PROMPT = `You are a precise meeting-notes assistant.
