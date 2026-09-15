@@ -53,10 +53,9 @@ app.use((err, _req, res, _next) => {
 const PORT = process.env.PORT || 3000;
 
 // On Vercel the platform manages the listener; only start a server locally.
-if (!process.env.VERCEL) {
-  app.listen(PORT, () => {
-    console.log(`[server] Meet Notetaker backend listening on :${PORT}`);
-  });
-}
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`[server] Meet Notetaker backend listening on :${PORT}`);
+});
 
 export default app;
