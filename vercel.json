@@ -1,9 +1,12 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": null,
-  "buildCommand": null,
-  "outputDirectory": null,
+  "services": {
+    "backend": {
+      "root": "./",
+      "entrypoint": "Dockerfile.vercel"
+    }
+  },
   "rewrites": [
-    { "source": "/(.*)", "destination": "/src/server.js" }
+    { "source": "/(.*)", "destination": { "service": "backend" } }
   ]
 }
