@@ -4,7 +4,7 @@
 const GROQ_API_BASE = "https://api.groq.com/openai/v1";
 const GROQ_CHAT_URL = `${GROQ_API_BASE}/chat/completions`;
 const GROQ_AUDIO_URL = `${GROQ_API_BASE}/audio/transcriptions`;
-const GROQ_CHAT_MODEL = "llama-3.3-70b-versatile";
+const GROQ_CHAT_MODEL = "openai/gpt-oss-120b";
 const GROQ_AUDIO_MODEL = "whisper-large-v3";
 
 function getKey() {
